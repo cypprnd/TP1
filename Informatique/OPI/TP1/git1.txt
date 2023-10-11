@@ -1,0 +1,2 @@
+Question 2: branches  config  description  HEAD  hooks  info  objects  refs
+Question 4 : renvoie le chemin pour aller dans les répértoires de la tête de l'arbre
