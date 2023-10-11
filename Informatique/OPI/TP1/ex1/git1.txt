@@ -1,0 +1,8 @@
+Question 2: branches  config  description  HEAD  hooks  info  objects  refs
+Question 4 : renvoie le chemin pour aller dans les répértoires de la tête de l'arbre
+Question 5 : le fichier est maintenant indexé nouveau fichier : OPI/TP1/git1.txt
+Question 7: le repertoire à été modifié
+Question 8: ça affiche l'heure de la modification des anciennes sauvegardes, leur noms aisni ce qui à été modifié depuis la dernière version
+Question 9: Affiche les modifications par rapport à la version en cours
+Question 10:token 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 
+Question 11: Il y a la dernière sauvegarde de ce fichir qui a été envoyé sur le dépôt
