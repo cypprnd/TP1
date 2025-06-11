@@ -1,0 +1,314 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-05-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Algorithmes pour modèles à blocs latents
+
+```{r}
+### Chargement des librairies
+rm(list=ls())
+```
+
+## 1. Algorithme EM
+
+```{r}
+EM_Gaussien <- function(x, K, max_iter = 1000, tol = 1e-6) {
+  n <- length(x)
+  print(K)
+  # Initialisation aléatoire
+  set.seed(123)
+  pi_k <- rep(1/K, K)
+  mu_k <- sample(x, K)
+  sigma_k <- rep(sd(x), K)
+  
+  loglik_prev <- -Inf
+  
+  for (iter in 1:max_iter) {
+    # === E-step : calcul de tau_tk ===
+    tau <- matrix(0, n, K)
+    for (k in 1:K) {
+      tau[, k] <- pi_k[k] * dnorm(x, mean = mu_k[k], sd = sigma_k[k])
+    }
+    tau <- tau / rowSums(tau)  # normalisation
+    
+    # === M-step : mise à jour des paramètres ===
+    Nk <- colSums(tau)
+    pi_k <- Nk / n
+    mu_k <- sapply(1:K, function(k) sum(tau[,k] * x) / Nk[k])
+    sigma_k <- sapply(1:K, function(k) sqrt(sum(tau[,k] * (x - mu_k[k])^2) / Nk[k]))
+
+    
+    # === Log-vraisemblance ===
+    loglik <- sum(log(rowSums(sapply(1:K, function(k) pi_k[k] * dnorm(x, mu_k[k], sigma_k[k])))))
+    
+    # Convergence
+    if (abs(loglik - loglik_prev) < tol) {
+      print("Convergence atteinte en : ")
+      print(iter)
+      break
+    }
+    loglik_prev <- loglik
+  }
+  list(pi = pi_k, mu = mu_k, sigma = sigma_k, posteriori = tau, logLik = loglik)
+}
+```
+
+```{r}
+set.seed(1)
+
+### On génère des observations sur les individus suivant un mélange de gaussienne
+K = 4
+x1 <- c(rnorm(K*50, mean = -2, sd = 1),
+       rnorm(K*75, mean = -5, sd = 0.8),
+       rnorm(K*30, mean = 0, sd = 0.4),
+       rnorm(K*70, mean = 3, sd = 1.5))
+
+K = 2
+x2 <- c(rnorm(K*50, mean = -2, sd = 1),
+       rnorm(K*75, mean = 2, sd = 0.8))
+
+res1 <- EM_Gaussien(x1, K = 4)
+res2 <- EM_Gaussien(x2, K = 2)
+
+print("Paramètres 2")
+print(res2$pi) #Proportions des groupes
+print(res2$mu)  #Moyennes des groupes
+print(res2$sigma)  #Ecart-type
+
+print("Paramètres 1")
+print(res1$pi)
+print(res1$mu)  
+print(res1$sigma) 
+```
+
+```{r}
+hist(x2, breaks = 30, probability = TRUE, col = "lightgrey", main = "Mélange Gaussien")
+curve(res2$pi[1]*dnorm(x, res2$mu[1], res2$sigma[1]) +
+      res2$pi[2]*dnorm(x, res2$mu[2], res2$sigma[2]),
+      add = TRUE, col = "red", lwd = 2)
+
+hist(x1, breaks = 30, probability = TRUE, col = "lightgrey", main = "Mélange Gaussien")
+curve(res1$pi[1]*dnorm(x, res1$mu[1], res1$sigma[1]) +
+      res1$pi[2]*dnorm(x, res1$mu[2], res1$sigma[2]) +
+      res1$pi[3]*dnorm(x, res1$mu[3], res1$sigma[3]) +
+      res1$pi[4]*dnorm(x, res1$mu[4], res1$sigma[4]),
+      add = TRUE, col = "red", lwd = 2)
+```
+
+```{r}
+posterior_probs <- function(x, pi_k, mu_k, sigma_k) {
+  K <- length(pi_k)
+  n <- length(x)
+  gamma <- matrix(0, nrow = n, ncol = K)
+  
+  # Densité pondérée pour chaque composante
+  for (k in 1:K) {
+    gamma[,k] <- pi_k[k] * dnorm(x, mean = mu_k[k], sd = sigma_k[k])
+  }
+  
+  # Normalisation : somme sur les composantes
+  gamma <- gamma / rowSums(gamma)
+  
+  return(gamma)  # n x K matrix
+}
+
+gamma2 <- posterior_probs(x2, res2$pi, res2$mu, res2$sigma)
+
+gamma1 <- posterior_probs(x1, res1$pi, res1$mu, res1$sigma)
+
+ord <- order(x2)
+plot(x2[ord], gamma2[ord,1], type = "l", col = "blue", lwd = 2,
+     ylab = "Probabilité a posteriori", xlab = "x",
+     main = "P(Z = k | x) pour K=2")
+lines(x2[ord], gamma2[ord,2], col = "red", lwd = 2)
+legend("topright", legend = c("Groupe 1", "Groupe 2"),
+       col = c("blue", "red"), lwd = 2)
+
+ord <- order(x1)
+matplot(x1[ord], gamma1[ord,], type = "l", lwd = 2, lty = 1,
+        col = rainbow(4), ylab = "Probabilité a posteriori", xlab = "x",
+        main = "P(Z = k | x) pour K=4")
+legend("topright", legend = paste("Groupe", 1:4),
+       col = rainbow(4), lty = 1, lwd = 2)
+
+```
+
+## 2 - Algorithme VEM
+
+On a la matrice d'adjacence du SBM, on la centre puis on fait la décompostion en valeurs singulières afin de retrouver les composantes principales. Chaque individu à sa projection dans l'espace de taille K et on applique alors l'algo kmeans pour classifier les individus.
+
+```{r}
+initialize_tau_kmeans <- function(A, K) {
+  n <- nrow(A)
+  
+  # Permet de retrouver les composantes principales
+  svd_res <- svd(scale(A))  #centre la matrice + décomposition en valeurs singulières
+  X <- svd_res$u[, 1:K]     # K premières composantes principales pour la projection
+
+  # Clustering K-means
+  km <- kmeans(X, centers = K, nstart = 10)
+  labels <- km$cluster
+  
+  # Initialisation de tau : 1 pour le groupe attribué, 0 ailleurs
+  tau <- matrix(0, nrow = n, ncol = K)
+  for (i in 1:n) {
+    tau[i, labels[i]] <- 1
+  }
+  tau
+}
+
+```
+
+On initialise les probas à postériori des individus avec kmeans, pour pi on fait la moyenne des probas à postériori pour chaque groupe et on met gamma à 0.5.
+
+\
+M-step : On calcule la proba de connexion entre chaque groupe en faisant la somme des probas à postériori des noeuds qui sont reliés divisés par ceux qui possibles. Avec ces probas que l'on a calculé on calcule les probas d'appartenance au groupe en faisant la moyenne.
+
+V-step : Pour chaque groupe q, on initialise une somme à 0. On calcule la log vraisemblance attendue que i soit dans q, compte tenu de ses connexions aux autres nœuds.
+
+1.  si A_ij=1 : log(P(A_ij=1\|Zi=q,Zj=l)=log(gamma_ql) (proba à priori) sinon log(1-gamma_ql)
+
+```{r}
+VEM_SBM <- function(A, K, max_iter = 500, tol = 1e-6) {
+  n <- nrow(A)
+
+  # Initialisation
+  tau <- initialize_tau_kmeans(A, K)
+  A[lower.tri(A, diag = TRUE)] <- NA  # Utilise moitié supérieure du graphe
+
+  pi <- colMeans(tau)
+  gamma <- matrix(0.5, nrow = K, ncol = K)
+  
+  loglik_prev <- -Inf
+  
+  for (iter in 1:max_iter) {
+    ### M-step
+    pi <- colMeans(tau)
+    
+    gamma_new <- matrix(0, K, K)
+    for (q in 1:K) {
+      for (l in 1:K) {
+        num <- 0
+        den <- 0
+        for (i in 1:(n-1)) {
+          for (j in (i+1):n) {
+            if (!is.na(A[i,j])) {
+              num <- num + tau[i,q] * tau[j,l] * A[i,j]
+              den <- den + tau[i,q] * tau[j,l]
+            }
+          }
+        }
+        gamma_new[q,l] <- ifelse(den > 0, num / den, 0)
+      }
+    }
+    gamma <- gamma_new
+
+    ### V-step
+    log_tau <- matrix(0, n, K)
+    for (i in 1:n) {
+      for (q in 1:K) {
+        sum_log_prob <- 0
+        for (j in setdiff(1:n, i)) { # les j différents des i
+          for (l in 1:K) {
+            if (!is.na(A[i,j])) {
+              a_ij <- A[i,j]
+              sum_log_prob <- sum_log_prob +
+                tau[j,l] * (a_ij * log(gamma[q,l] ) +
+                            (1 - a_ij) * log(1 - gamma[q,l] ))
+            }
+          }
+        }
+        log_tau[i,q] <- log(pi[q] ) + sum_log_prob
+      }
+    }
+    
+    # Exponentiation et normalisation
+    tau <- exp(log_tau)
+    tau <- tau / rowSums(tau)
+    
+    loglik <- sum(log(rowSums(tau))) 
+    
+    if (abs(loglik - loglik_prev) < tol) break
+    loglik_prev <- loglik
+  }
+  
+  list(tau = tau, pi = pi, gamma = gamma)
+}
+
+```
+
+```{r}
+# Génération d’un graphe SBM
+simulate_SBM <- function(n, K, pi, gamma) {
+  Z <- sample(1:K, n, replace = TRUE, prob = pi)
+  A <- matrix(0, n, n)
+  for (i in 1:(n-1)) {
+    for (j in (i+1):n) {
+      prob <- gamma[Z[i], Z[j]]
+      A[i,j] <- A[j,i] <- rbinom(1, 1, prob) # deux noeuds connecté ou pas selon la loi binomiale
+    }
+  }
+  list(A = A, Z = Z)
+}
+
+set.seed(42)
+n <- 1000
+K <- 3
+pi_true <- c(0.2, 0.4, 0.4)
+gamma_true <- matrix(c(0.9, 0.1, 0.1,
+                       0.1, 0.5, 0.1,
+                       0.1, 0.1, 0.9), nrow = 3, byrow = TRUE)
+
+sim <- simulate_SBM(n, K, pi_true, gamma_true)
+# VEM avec initialisation par K-means
+res <- VEM_SBM(sim$A, K = 3)
+
+# Visualisation
+plot(res$tau[,1],res$tau[,2], col = rainbow(K)[apply(res$tau, 1, which.max)], pch = 19,
+     main = "Probas a posteriori (tau) après init. K-means")
+
+legend("topright", 
+       legend = paste("Groupe", 1:K),
+       col = rainbow(K), 
+       pch = 19,
+       title = "Groupes")
+# Appartenance au groupe
+table(apply(res$tau, 1, which.max))/n
+
+# Comparaison des groupes
+library(clue)
+Zhat <- apply(res$tau, 1, which.max)
+alignment <- solve_LSAP(table(sim$Z, Zhat), maximum = TRUE)
+Zhat_aligned <- alignment[Zhat]
+
+#Proportion de décisions correctes sur tous les couples
+cat("Rand Index:", mclust::adjustedRandIndex(sim$Z, Zhat_aligned), "\n")
+
+
+
+```
+
+```{r}
+library(ggplot2)
+library(reshape2)
+
+# Transformer la matrice gamma en format long
+gamma_df <- melt(res$gamma)
+colnames(gamma_df) <- c("q", "l", "value")
+
+# Affichage avec ggplot2
+ggplot(gamma_df, aes(x = l, y = q, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "darkred") +
+  geom_text(aes(label = sprintf("%.2f", value)), size = 4) +
+  labs(title = "Probabilités de connexion entre groupes (gamma)",
+       x = "Groupe l", y = "Groupe q", fill = "Proba") +
+  theme_minimal()
+
+```
